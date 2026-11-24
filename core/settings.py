@@ -11,19 +11,31 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 from pathlib import Path
+import environ
+import os
+
+env = environ.Env(
+    DEBUG=(bool, False)
+)
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+env_file_path = BASE_DIR/'.env'
 
+if not os.path.exists(env_file_path):
+    env_file_path = BASE_DIR/'core'/'.env'
+    
+environ.Env.read_env(str(env_file_path))
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-48tsm92b6-y*g^g&^*3=n157nw0r&yvgf@blxpx@13ho$y_#t6'
+SECRET_KEY = env('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env('DEBUG')
 
 ALLOWED_HOSTS = []
 
@@ -37,13 +49,36 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+
+    # Core API and Authentication libraries
     'rest_framework',
     'corsheaders',
-    'api'
+    'api',
+
+    # GOOGLE AUTHENTICATION MODULE REGISTRY
+    'allauth',
+    'allauth.account',
+    'allauth.socialaccount',
+    'allauth.socialaccount.providers.google',
 ]
 
+SITE_ID = 1
+# Allows logging in using EITHER their unique username or their email address
+ACCOUNT_LOGIN_METHODS = {'username','email'}
+
+
+
+# 💡 THE FIX: Set this to False so users don't have to create usernames!
+ACCOUNT_SIGNUP_FIELDS = ['email*']
+
+#
+ACCOUNT_UNIQUES_USERNAMES = False
+
+# Disables mandatory email verification clicks so clients can check out instantly
+ACCOUNT_EMAIL_VERIFICATION = 'none'
+
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware'
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -51,6 +86,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'allauth.account.middleware.AccountMiddleware'
 ]
 
 ROOT_URLCONF = 'core.urls'
@@ -124,10 +160,42 @@ STATIC_URL = 'static/'
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
-}
+
 
 CORS_ALLOW_ALL_ORIGINS = True
+
+if env.bool("USE_CONSOLE_EMAIL", default=False):
+    #Prints emails in the terminal instead of sending them
+    MAILERS = {
+        "default": {
+            "BACKEND":"django.core.mail.backends.console.EmailBackend",
+        }
+
+    }
+else:
+    MAILERS = {
+        "default": {
+            "BACKEND": "django.core.mail.backends.smtp.EmailBackend",
+            "OPTIONS": {
+                        "host": 'smtp-relay.brevo.com',
+                        "port": 587,
+                        "use_tls": True,
+                        "username": env("BREVO_USERNAME"),
+                        "password": env("BREVO_PASSWORD"),
+                        "timeout": 10,
+                
+            },
+        }
+    }
+
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
+
+PAYSTACK_PUBLIC_KEY = env('PAYSTACK_PUBLIC_KEY')
+PAYSTACK_SECRET_KEY = env('PAYSTACK_SECRET_KEY')
+
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+}
