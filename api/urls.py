@@ -1,29 +1,29 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import ProductListView, ComboListView,AdminProductCreateView, CheckoutView, AdminOrderUpdateView, PaymentCaptureView
+from .views import (ProductListView, ComboListView, AdminProductCreateView, CheckoutView,
+                    AdminOrderUpdateView, OrderListView, OrderDetailView,
+                    PaymentInitializeView, PaymentVerifyView, PaystackWebhookView)
 
 urlpatterns = [
-
-    # --- TRADITIONAL USER AUTHENTICATION & LOGIN PORTS
-    # Traditional Login Endpoint 
+    # Auth
     path('auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-
     path('auth/login/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    #1. Road for anyone to browse individual hair products
-    path('products/', ProductListView.as_view(), name='product-list'),
 
-    #2. Road for anyone to see promotional bundle sets
+    # Catalogue (public)
+    path('products/', ProductListView.as_view(), name='product-list'),
     path('combos/', ComboListView.as_view(), name='combo-list'),
 
-    #3. Secure road for ONLY the admin to create new products
-    path('admin/products/create/', AdminProductCreateView.as_view(), name='admin-product-create'),
-
-    #4. Checkout Transaction Road Here
+    # Customer: checkout and orders
     path('checkout/', CheckoutView.as_view(), name='customer-checkout'),
+    path('orders/', OrderListView.as_view(), name='order-list'),
+    path('orders/<int:pk>/', OrderDetailView.as_view(), name='order-detail'),
 
-    #5. Order Life-cycle Admin Update Road
+    # Paystack payments
+    path('payments/initialize/', PaymentInitializeView.as_view(), name='payment-initialize'),
+    path('payments/verify/', PaymentVerifyView.as_view(), name='payment-verify'),
+    path('payments/webhook/', PaystackWebhookView.as_view(), name='paystack-webhook'),
+
+    # Admin
+    path('admin/products/create/', AdminProductCreateView.as_view(), name='admin-product-create'),
     path('admin/orders/<int:order_id>/update/', AdminOrderUpdateView.as_view(), name='admin-order-update'),
-
-    #6. Payment Capture Road
-    path('checkout/payment-capture/', PaymentCaptureView.as_view(), name='payment-capture'),
 ]
