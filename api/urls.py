@@ -1,13 +1,17 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (ProductListView, ComboListView, AdminProductCreateView, CheckoutView,
                     AdminOrderUpdateView, OrderListView, OrderDetailView,
-                    PaymentInitializeView, PaymentVerifyView, PaystackWebhookView)
+                    PaymentInitializeView, PaymentVerifyView, PaystackWebhookView,
+                    LoginView, RegisterView, MeView,
+                    NotificationListView, NotificationMarkReadView)
 
 urlpatterns = [
     # Auth
-    path('auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('auth/register/', RegisterView.as_view(), name='register'),
+    path('auth/login/', LoginView.as_view(), name='token_obtain_pair'),
     path('auth/login/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('auth/me/', MeView.as_view(), name='me'),
 
     # Catalogue (public)
     path('products/', ProductListView.as_view(), name='product-list'),
@@ -17,6 +21,10 @@ urlpatterns = [
     path('checkout/', CheckoutView.as_view(), name='customer-checkout'),
     path('orders/', OrderListView.as_view(), name='order-list'),
     path('orders/<int:pk>/', OrderDetailView.as_view(), name='order-detail'),
+
+    # Notifications
+    path('notifications/', NotificationListView.as_view(), name='notification-list'),
+    path('notifications/<int:pk>/read/', NotificationMarkReadView.as_view(), name='notification-read'),
 
     # Paystack payments
     path('payments/initialize/', PaymentInitializeView.as_view(), name='payment-initialize'),

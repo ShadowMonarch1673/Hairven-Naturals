@@ -283,3 +283,126 @@ class DjangoAdminTests(BaseCase):
         self.assertEqual(order.items.count(), 2)
         self.assertEqual(self.client.get(f'/admin/api/order/{order.id}/change/').status_code, 200)
         self.assertEqual(self.client.get('/admin/api/combo/').status_code, 200)
+
+
+class AccountTests(BaseCase):
+    STRONG = 'Str0ng!pass-xyz'
+
+    def setUp(self):
+        super().setUp()
+        from django.core.cache import cache
+        cache.clear()  # throttle counters live in the cache
+        self.anon = APIClient()
+
+    def register(self, **over):
+        body = {'email': 'New.User@Example.com', 'password': self.STRONG}
+        body.update(over)
+        return self.anon.post(reverse('register'), body, format='json')
+
+    def test_register_creates_user_profile_and_tokens(self):
+        res = self.register(phone='0551234567', first_name='Ama')
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertNotIn('password', json.dumps(res.data))
+        user = User.objects.get(email='new.user@example.com')  # stored lowercase
+        self.assertTrue(user.check_password(self.STRONG))
+        self.assertEqual(user.username, 'new.user')  # derived from the email
+        self.assertEqual(user.profile.phone_number, '0551234567')
+        self.assertEqual(res.data['user']['phone'], '0551234567')
+
+        authed = APIClient()
+        authed.credentials(HTTP_AUTHORIZATION=f"Bearer {res.data['access']}")
+        self.assertEqual(authed.get(reverse('order-list')).status_code, 200)
+
+    def test_generated_usernames_are_unique(self):
+        self.register(email='twin@one.com')
+        self.register(email='twin@two.com')
+        names = set(User.objects.filter(email__startswith='twin@').values_list('username', flat=True))
+        self.assertEqual(len(names), 2)
+
+    def test_explicit_username(self):
+        self.assertEqual(self.register(username='ama_k').status_code, 201)
+        self.assertTrue(User.objects.filter(username='ama_k').exists())
+
+    def test_rejections(self):
+        self.assertEqual(self.register(email='ama@example.com').status_code, 400)   # exists
+        self.assertEqual(self.register(email='AMA@EXAMPLE.COM').status_code, 400)   # case-insensitive
+        self.assertEqual(self.register(email='not-an-email').status_code, 400)
+        self.assertEqual(self.register(password='short').status_code, 400)
+        self.assertEqual(self.register(password='12345678').status_code, 400)
+        self.assertEqual(self.register(password='password123').status_code, 400)    # too common
+        self.assertEqual(self.register(username='ama').status_code, 400)            # taken
+        self.assertEqual(self.register(username='AMA').status_code, 400)            # taken, any case
+        self.assertEqual(self.register(username='a@b.com').status_code, 400)        # '@' not allowed
+        self.assertEqual(self.register(username='has space').status_code, 400)
+        self.assertEqual(self.anon.post(reverse('register'), {}, format='json').status_code, 400)
+        self.assertEqual(User.objects.filter(email__icontains='example.com').count(), 3)  # only the fixtures
+
+    def login(self, identifier, password='pw12345!'):
+        return self.anon.post(reverse('token_obtain_pair'),
+                              {'username': identifier, 'password': password}, format='json')
+
+    def test_login_with_username_or_email(self):
+        self.assertEqual(self.login('ama').status_code, 200)
+        res = self.login('AMA@example.com')
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('access', res.data)
+        self.assertEqual(self.login('ama@example.com', 'wrong').status_code, 401)
+        self.assertEqual(self.login('nobody@example.com').status_code, 401)
+
+    def test_register_then_login_with_email(self):
+        self.register()
+        res = self.login('new.user@example.com', self.STRONG)
+        self.assertEqual(res.status_code, 200)
+
+    def test_me_get_and_patch(self):
+        self.assertEqual(APIClient().get(reverse('me')).status_code, 401)
+        res = self.client.get(reverse('me'))  # fixture user has no profile row yet
+        self.assertEqual((res.data['username'], res.data['phone']), ('ama', ''))
+        res = self.client.patch(reverse('me'), {'phone': '0244000000', 'first_name': 'Ama',
+                                                'email': 'hacker@example.com', 'username': 'x'}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['phone'], '0244000000')
+        self.user.refresh_from_db()
+        self.assertEqual((self.user.first_name, self.user.email, self.user.username),
+                         ('Ama', 'ama@example.com', 'ama'))  # email/username untouched
+
+    def test_register_is_rate_limited(self):
+        from api.views import RegisterThrottle
+        with patch.object(RegisterThrottle, 'rate', '3/hour'):
+            for i in range(3):
+                self.assertEqual(self.register(email=f'bulk{i}@example.com').status_code, 201)
+            self.assertEqual(self.register(email='one-too-many@example.com').status_code, 429)
+
+
+class NotificationTests(BaseCase):
+    def test_user_cannot_mark_someone_elses_notification_as_read(self):
+        note = Notification.objects.create(user=self.other, title="Hi", message="Test")
+        res = self.client.patch(reverse('notification-read', args=[note.id]), format='json')
+        self.assertEqual(res.status_code, 404)
+        note.refresh_from_db()
+        self.assertEqual(note.is_read, False)
+
+    def test_user_can_mark_own_notification_as_read(self):
+        note = Notification.objects.create(user=self.user, title="Hi", message="Test")
+        res = self.client.patch(reverse('notification-read', args=[note.id]), format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['is_read'], True)
+        note.refresh_from_db()
+        self.assertEqual(note.is_read, True)
+
+    def test_missing_notification_returns_404(self):
+        res = self.client.patch(reverse('notification-read', args=[9999]), format='json')
+        self.assertEqual(res.status_code, 404)
+
+    def test_list_shows_only_own_notifications_newest_first(self):
+        first = Notification.objects.create(user=self.user, title="First", message="a")
+        second = Notification.objects.create(user=self.user, title="Second", message="b")
+        Notification.objects.create(user=self.other, title="Not mine", message="c")
+        res = self.client.get(reverse('notification-list'))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual([n['id'] for n in res.data], [second.id, first.id])
+
+    def test_login_required(self):
+        anon = APIClient()
+        self.assertEqual(anon.get(reverse('notification-list')).status_code, 401)
+        self.assertEqual(anon.patch(reverse('notification-read', args=[1])).status_code, 401)

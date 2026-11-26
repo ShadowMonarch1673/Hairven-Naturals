@@ -3,18 +3,79 @@ import logging
 import uuid
 
 from django.conf import settings
+from django.db import IntegrityError
 from rest_framework import generics, status
+from rest_framework.throttling import AnonRateThrottle
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import paystack
 from .models import Combo, Notification, Order, Product
-from .serializers import ComboSerializer, OrderSerializer, ProductSerializer
+from .serializers import (ComboSerializer, EmailOrUsernameTokenSerializer, MeSerializer,
+                          NotificationSerializer, OrderSerializer, ProductSerializer,
+                          RegisterSerializer)
 from .services import (CheckoutError, PaymentVerificationError, apply_paystack_payment,
                        create_order_from_cart, safe_send_mail)
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# Accounts
+# --------------------------------------------------------------------------- #
+class RegisterThrottle(AnonRateThrottle):
+    scope = 'register'
+    rate = '30/hour'  # per IP; generous because many customers share mobile-network IPs
+
+
+class LoginThrottle(AnonRateThrottle):
+    scope = 'login'
+    rate = '20/min'
+
+
+class LoginView(TokenObtainPairView):
+    """POST {username, password}. `username` may be a username or an email address."""
+    serializer_class = EmailOrUsernameTokenSerializer
+    throttle_classes = [LoginThrottle]
+
+
+class RegisterView(APIView):
+    """Create a customer account and log them straight in."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [RegisterThrottle]
+
+    def post(self, request):
+        serializer = RegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            user = serializer.save()
+        except IntegrityError:  # two signups raced for the same username
+            return Response({'error': 'That username or email was just taken, please try again'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'user': MeSerializer(user).data,
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+        }, status=status.HTTP_201_CREATED)
+
+
+class MeView(APIView):
+    """The logged-in customer's own profile."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(MeSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = MeSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 # --------------------------------------------------------------------------- #
@@ -69,6 +130,24 @@ class OrderListView(generics.ListAPIView):
     def get_queryset(self):
         return (Order.objects.filter(user=self.request.user)
                 .prefetch_related('items__product', 'items__combo'))
+
+class NotificationListView(generics.ListAPIView):
+    serializer_class = NotificationSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Notification.objects.filter(user=self.request.user).order_by('-created_at')
+
+class NotificationMarkReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        notification = Notification.objects.filter(user=self.request.user, pk=pk).first()
+        if notification is None:
+            return Response({"error": "Notification not found"}, status=status.HTTP_404_NOT_FOUND)
+        notification.is_read = True
+        notification.save()
+        return Response(NotificationSerializer(notification).data)
 
 
 class OrderDetailView(generics.RetrieveAPIView):
