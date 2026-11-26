@@ -37,7 +37,7 @@ SECRET_KEY = env('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env('DEBUG')
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['127.0.0.1', 'localhost'])
 
 
 # Application definition
@@ -161,8 +161,11 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
 
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
+    'http://localhost:3000',
+    'http://localhost:5173',
+])
 
-CORS_ALLOW_ALL_ORIGINS = True
 
 if env.bool("USE_CONSOLE_EMAIL", default=False):
     #Prints emails in the terminal instead of sending them
@@ -199,3 +202,13 @@ REST_FRAMEWORK = {
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
 }
+
+
+# --- Production-only security (active when DEBUG=False) ---
+if not DEBUG:
+    # Trust the hosting proxy's header that says the original request was HTTPS
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True          # send any http:// request to https://
+    SESSION_COOKIE_SECURE = True        # cookies only travel over HTTPS
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 3600          # tell browsers "HTTPS only" for 1 hour (raise later)
