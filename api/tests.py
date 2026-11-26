@@ -439,3 +439,40 @@ class CancelUnpaidOrderTests(BaseCase):
         self.assertFalse(cancel_unpaid_order(99999))
         paid.refresh_from_db(); shipped.refresh_from_db()
         self.assertEqual((paid.status, shipped.status), ('PENDING', 'IN_TRANSIT'))
+
+
+class CancelAbandonedOrdersCommandTests(BaseCase):
+    def age(self, order, minutes):
+        from datetime import timedelta
+        from django.utils import timezone
+        Order.objects.filter(pk=order.pk).update(created_at=timezone.now() - timedelta(minutes=minutes))
+
+    def run_command(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        call_command('cancel_abandoned_orders', *args, stdout=out)
+        return out.getvalue()
+
+    def test_cancels_only_old_unpaid_pending_orders(self):
+        old = self.make_order(); self.age(old, 120)
+        recent = self.make_order(); self.age(recent, 5)
+        old_paid = self.make_order(); self.age(old_paid, 120)
+        old_paid.is_paid = True; old_paid.save()
+
+        output = self.run_command()
+        self.assertIn('Cancelled 1', output)
+        for order in (old, recent, old_paid):
+            order.refresh_from_db()
+        self.assertEqual((old.status, recent.status, old_paid.status),
+                         ('CANCELLED', 'PENDING', 'PENDING'))
+        self.shampoo.refresh_from_db()
+        self.assertEqual(self.shampoo.stock, 10 - 6 + 2)  # 3 orders of 2 took 6; only `old` came back
+
+    def test_minutes_option_and_dry_run(self):
+        order = self.make_order(); self.age(order, 30)
+        self.assertIn('Would cancel 1', self.run_command('--minutes', '10', '--dry-run'))
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'PENDING')  # dry run changed nothing
+        self.assertIn('Cancelled 0', self.run_command())  # 30 min is under the 60 default
+        self.assertIn('Cancelled 1', self.run_command('--minutes', '10'))
