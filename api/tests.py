@@ -406,3 +406,36 @@ class NotificationTests(BaseCase):
         anon = APIClient()
         self.assertEqual(anon.get(reverse('notification-list')).status_code, 401)
         self.assertEqual(anon.patch(reverse('notification-read', args=[1])).status_code, 401)
+
+
+
+class CancelUnpaidOrderTests(BaseCase):
+    def test_cancel_restores_product_and_combo_stock(self):
+        from api.services import cancel_unpaid_order
+        order = self.make_order([{'product_id': self.shampoo.id, 'quantity': 2},
+                                 {'combo_id': self.combo.id, 'quantity': 1}])
+        self.shampoo.refresh_from_db(); self.oil.refresh_from_db()
+        self.assertEqual((self.shampoo.stock, self.oil.stock), (7, 4))  # 10-2-1, 5-1
+
+        self.assertTrue(cancel_unpaid_order(order.id))
+        self.shampoo.refresh_from_db(); self.oil.refresh_from_db(); order.refresh_from_db()
+        self.assertEqual((self.shampoo.stock, self.oil.stock), (10, 5))
+        self.assertEqual(order.status, 'CANCELLED')
+
+    def test_cancelling_twice_does_not_restore_twice(self):
+        from api.services import cancel_unpaid_order
+        order = self.make_order()
+        self.assertTrue(cancel_unpaid_order(order.id))
+        self.assertFalse(cancel_unpaid_order(order.id))
+        self.shampoo.refresh_from_db()
+        self.assertEqual(self.shampoo.stock, 10)
+
+    def test_paid_or_shipped_orders_are_left_alone(self):
+        from api.services import cancel_unpaid_order
+        paid = self.make_order(); paid.is_paid = True; paid.save()
+        shipped = self.make_order(); shipped.status = 'IN_TRANSIT'; shipped.save()
+        self.assertFalse(cancel_unpaid_order(paid.id))
+        self.assertFalse(cancel_unpaid_order(shipped.id))
+        self.assertFalse(cancel_unpaid_order(99999))
+        paid.refresh_from_db(); shipped.refresh_from_db()
+        self.assertEqual((paid.status, shipped.status), ('PENDING', 'IN_TRANSIT'))

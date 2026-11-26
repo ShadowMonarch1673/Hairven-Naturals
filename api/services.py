@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from django.core.mail import send_mail
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 
 from . import paystack
@@ -206,3 +207,37 @@ def apply_paystack_payment(data, user=None):
         transaction.on_commit(lambda: send_payment_receipt(order, reference))
 
     return order, True
+
+
+# --------------------------------------------------------------------------- #
+# Abandoned orders
+# --------------------------------------------------------------------------- #
+def _restore_stock(product_id, quantity):
+    # F() makes the database do "stock = stock + n" itself, so two things
+    # restoring stock at once cannot overwrite each other.
+    Product.objects.filter(pk=product_id).update(stock=F('stock') + quantity)
+
+
+@transaction.atomic
+def cancel_unpaid_order(order_id):
+    """Cancel an unpaid, still-pending order and put its stock back.
+
+    Returns True if the order was cancelled, False if it was left alone
+    (not found, already paid, shipped, or already cancelled).
+    """
+    # Lock the row: a payment being recorded at the same moment must wait
+    # for us (or we wait for it), never both succeed.
+    order = Order.objects.select_for_update().filter(pk=order_id).first()
+    if order is None or order.is_paid or order.status != 'PENDING':
+        return False
+
+    for item in order.items.select_related('combo'):
+        if item.product_id:
+            _restore_stock(item.product_id, item.quantity)
+        elif item.combo_id:
+            for member_id in item.combo.products.values_list('pk', flat=True):
+                _restore_stock(member_id, item.quantity)
+
+    order.status = 'CANCELLED'
+    order.save(update_fields=['status'])
+    return True
