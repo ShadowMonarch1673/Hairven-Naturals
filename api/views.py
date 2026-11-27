@@ -11,6 +11,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework.permissions import AllowAny, IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.filters import OrderingFilter, SearchFilter
 
 from . import paystack
 from .models import Combo, Notification, Order, Product
@@ -82,16 +83,36 @@ class MeView(APIView):
 # Catalogue
 # --------------------------------------------------------------------------- #
 class ProductListView(generics.ListAPIView):
+    """In-stock products. Supports ?search=, ?ordering=price (or -price, name, created_at)."""
     queryset = Product.objects.filter(stock__gt=0)
+    serializer_class = ProductSerializer
+    permission_classes = [AllowAny]
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ['name', 'description']
+    ordering_fields = ['price', 'name', 'created_at']
+    ordering = ['-created_at']
+
+
+class ProductDetailView(generics.RetrieveAPIView):
+    """One product. Sold-out products still load (stock 0) so shared links and carts keep working."""
+    queryset = Product.objects.all()
     serializer_class = ProductSerializer
     permission_classes = [AllowAny]
 
 
 class ComboListView(generics.ListAPIView):
+    """Active combos. Supports ?search=."""
     queryset = Combo.objects.filter(is_active=True).prefetch_related('products')
     serializer_class = ComboSerializer
     permission_classes = [AllowAny]
+    filter_backends = [SearchFilter]
+    search_fields = ['name', 'description']
 
+
+class ComboDetailView(generics.RetrieveAPIView):
+    queryset = Combo.objects.filter(is_active=True).prefetch_related('products')
+    serializer_class = ComboSerializer
+    permission_classes = [AllowAny]
 
 class AdminProductCreateView(generics.CreateAPIView):
     queryset = Product.objects.all()

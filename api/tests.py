@@ -556,3 +556,34 @@ class PermissionDefaultTests(BaseCase):
             self.assertEqual(method(reverse(name, args=args)).status_code, 401, name)
         for name in ('customer-checkout', 'payment-initialize', 'payment-verify'):
             self.assertEqual(anon.post(reverse(name), {}, format='json').status_code, 401, name)
+
+
+class CatalogueTests(BaseCase):
+    def setUp(self):
+        super().setUp()
+        self.anon = APIClient()
+
+    def test_product_detail_is_public_and_shows_sold_out_products(self):
+        gone = Product.objects.create(name='Sold Out Mask', price=Decimal('20.00'), stock=0)
+        res = self.anon.get(reverse('product-detail', args=[gone.id]))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual((res.data['name'], res.data['stock']), ('Sold Out Mask', 0))
+        self.assertEqual(self.anon.get(reverse('product-detail', args=[9999])).status_code, 404)
+        self.assertNotIn(gone.id, [p['id'] for p in self.anon.get(reverse('product-list')).data])  # list still hides it
+
+    def test_combo_detail_only_for_active_combos(self):
+        res = self.anon.get(reverse('combo-detail', args=[self.combo.id]))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual({p['name'] for p in res.data['product_details']}, {'Shampoo', 'Oil'})
+        self.combo.is_active = False; self.combo.save()
+        self.assertEqual(self.anon.get(reverse('combo-detail', args=[self.combo.id])).status_code, 404)
+
+    def test_search_and_ordering(self):
+        res = self.anon.get(reverse('product-list'), {'search': 'shamp'})
+        self.assertEqual([p['name'] for p in res.data], ['Shampoo'])
+        res = self.anon.get(reverse('product-list'), {'ordering': 'price'})
+        self.assertEqual([p['name'] for p in res.data], ['Oil', 'Shampoo'])  # 30 then 50
+        res = self.anon.get(reverse('product-list'), {'ordering': '-price'})
+        self.assertEqual([p['name'] for p in res.data], ['Shampoo', 'Oil'])
+        self.assertEqual(len(self.anon.get(reverse('combo-list'), {'search': 'starter'}).data), 1)
+        self.assertEqual(len(self.anon.get(reverse('combo-list'), {'search': 'nothing'}).data), 0)
