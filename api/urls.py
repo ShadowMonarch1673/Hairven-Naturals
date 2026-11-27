@@ -4,7 +4,7 @@ from .views import (ProductListView, ComboListView, AdminProductCreateView, Chec
                     AdminOrderUpdateView, OrderListView, OrderDetailView,
                     PaymentInitializeView, PaymentVerifyView, PaystackWebhookView,
                     LoginView, RegisterView, MeView,
-                    NotificationListView, NotificationMarkReadView)
+                    NotificationListView, NotificationMarkReadView, ProductDetailView,ComboDetailView)
 
 urlpatterns = [
     # Auth
@@ -16,7 +16,8 @@ urlpatterns = [
     # Catalogue (public)
     path('products/', ProductListView.as_view(), name='product-list'),
     path('combos/', ComboListView.as_view(), name='combo-list'),
-
+    path('products/<int:pk>/', ProductDetailView.as_view(), name='product-detail'),
+    path('combos/<int:pk>/', ComboDetailView.as_view(), name='combo-detail'),
     # Customer: checkout and orders
     path('checkout/', CheckoutView.as_view(), name='customer-checkout'),
     path('orders/', OrderListView.as_view(), name='order-list'),
