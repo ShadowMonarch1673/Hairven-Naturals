@@ -529,3 +529,30 @@ class LatePaymentTests(BaseCase):
             res = self.client.post(reverse('payment-initialize'), {'order_id': order.id}, format='json')
         self.assertEqual(res.status_code, 400)
         init.assert_not_called()
+
+class PermissionDefaultTests(BaseCase):
+    def test_login_is_the_default_for_every_endpoint(self):
+        from rest_framework.settings import api_settings
+        self.assertEqual([c.__name__ for c in api_settings.DEFAULT_PERMISSION_CLASSES],
+                         ['IsAuthenticated'])
+
+    def test_public_endpoints_stay_open(self):
+        anon = APIClient()
+        self.assertEqual(anon.get(reverse('product-list')).status_code, 200)
+        self.assertEqual(anon.get(reverse('combo-list')).status_code, 200)
+
+    def test_token_refresh_and_login_work_without_logging_in_first(self):
+        anon = APIClient()
+        login = anon.post(reverse('token_obtain_pair'), {'username': 'ama', 'password': 'pw12345!'}, format='json')
+        self.assertEqual(login.status_code, 200)
+        refreshed = anon.post(reverse('token_refresh'), {'refresh': login.data['refresh']}, format='json')
+        self.assertEqual(refreshed.status_code, 200)
+
+    def test_private_endpoints_refuse_visitors(self):
+        anon = APIClient()
+        for name, args in (('order-list', []), ('notification-list', []), ('me', []),
+                           ('order-detail', [1]), ('notification-read', [1])):
+            method = anon.patch if name == 'notification-read' else anon.get
+            self.assertEqual(method(reverse(name, args=args)).status_code, 401, name)
+        for name in ('customer-checkout', 'payment-initialize', 'payment-verify'):
+            self.assertEqual(anon.post(reverse(name), {}, format='json').status_code, 401, name)
