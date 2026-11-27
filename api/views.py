@@ -175,6 +175,11 @@ class PaymentInitializeView(APIView):
         if order.is_paid:
             return Response({'error': 'This order has already been paid'},
                             status=status.HTTP_400_BAD_REQUEST)
+
+        if order.status == 'CANCELLED':
+            return Response({'error': 'This order has expired, please place a new order'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        
         if not request.user.email:
             return Response({'error': 'Your account needs an email address to pay'},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -279,6 +284,11 @@ class AdminOrderUpdateView(APIView):
         if not order.is_paid:
             return Response({"error": "This order has not been paid yet"},
                             status=status.HTTP_400_BAD_REQUEST)
+
+        if order.status == 'CANCELLED':
+            return Response({"error": "This order was cancelled and cannot be shipped"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
 
         if new_status == 'IN_TRANSIT':
             rider_name = (request.data.get('rider_name') or '').strip()

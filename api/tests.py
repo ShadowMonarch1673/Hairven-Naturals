@@ -476,3 +476,56 @@ class CancelAbandonedOrdersCommandTests(BaseCase):
         self.assertEqual(order.status, 'PENDING')  # dry run changed nothing
         self.assertIn('Cancelled 0', self.run_command())  # 30 min is under the 60 default
         self.assertIn('Cancelled 1', self.run_command('--minutes', '10'))
+
+
+class LatePaymentTests(BaseCase):
+    def cancelled_order(self):
+        from api.services import cancel_unpaid_order
+        order = self.make_order([{'product_id': self.shampoo.id, 'quantity': 2}])
+        cancel_unpaid_order(order.id)
+        order.refresh_from_db()
+        return order
+
+    def pay(self, order):
+        with patch('api.paystack.verify_transaction', return_value=self.paystack_data(order)):
+            with self.captureOnCommitCallbacks(execute=True):
+                return self.client.post(reverse('payment-verify'), {'reference': 'R'}, format='json')
+
+    def test_late_payment_revives_order_when_stock_is_available(self):
+        order = self.cancelled_order()
+        self.shampoo.refresh_from_db()
+        self.assertEqual(self.shampoo.stock, 10)
+
+        res = self.pay(order)
+        self.assertTrue(res.data['paid'])
+        order.refresh_from_db(); self.shampoo.refresh_from_db()
+        self.assertEqual((order.status, order.is_paid), ('PENDING', True))
+        self.assertEqual(self.shampoo.stock, 8)  # taken again
+        self.assertEqual(Notification.objects.get().title, "Payment Confirmed!")
+
+    def test_late_payment_after_sellout_is_recorded_and_flagged_for_refund(self):
+        order = self.cancelled_order()
+        Product.objects.filter(pk=self.shampoo.pk).update(stock=1)  # someone else bought it
+
+        with self.assertLogs('api.services', level='ERROR') as logs:
+            res = self.pay(order)
+        self.assertIn('REFUND NEEDED', logs.output[0])
+        self.assertTrue(res.data['paid'])
+        order.refresh_from_db(); self.shampoo.refresh_from_db()
+        self.assertEqual((order.status, order.is_paid), ('CANCELLED', True))
+        self.assertIsNotNone(order.paystack_reference)
+        self.assertEqual(self.shampoo.stock, 1)  # untouched, no partial deduction
+        self.assertIn('refund', Notification.objects.get().title.lower())
+        self.assertIn('refund', mail.outbox[0].subject.lower())
+
+        admin_client = APIClient(); admin_client.force_authenticate(self.admin)
+        res = admin_client.patch(reverse('admin-order-update', args=[order.id]),
+                                 {'status': 'DELIVERED'}, format='json')
+        self.assertEqual(res.status_code, 400)  # a refunded order can never ship
+
+    def test_cannot_start_a_new_payment_on_a_cancelled_order(self):
+        order = self.cancelled_order()
+        with patch('api.paystack.initialize_transaction') as init:
+            res = self.client.post(reverse('payment-initialize'), {'order_id': order.id}, format='json')
+        self.assertEqual(res.status_code, 400)
+        init.assert_not_called()

@@ -134,6 +134,40 @@ def _metadata_dict(data):
             metadata = {}
     return metadata if isinstance(metadata, dict) else {}
 
+def _reserve_stock_for(order):
+    """Take the stock for every item on an existing order again.
+
+    Raises CheckoutError if anything is short or no longer exists. Call it
+    inside transaction.atomic() so a partial reservation is rolled back.
+    """
+    for item in order.items.select_related('combo'):
+        if item.product_id:
+            product = Product.objects.select_for_update().filter(pk=item.product_id).first()
+            if product is None:
+                raise CheckoutError("A product on this order no longer exists")
+            _take_stock(product, item.quantity)
+        elif item.combo_id:
+            members = Product.objects.select_for_update().filter(combos=item.combo_id).order_by('pk')
+            for member in members:
+                _take_stock(member, item.quantity)
+        else:
+            raise CheckoutError("An item on this order no longer exists")
+
+
+def send_refund_notice(order, reference):
+    safe_send_mail(
+        subject=f"Hairven Naturals: Payment received for Order #{order.id}, refund on its way",
+        body=(
+            f"Hello {order.user.username},\n\n"
+            f"We received your payment of ₵{order.total_amount} for Order #{order.id}, but it arrived "
+            f"after the order had expired and the items have since sold out.\n\n"
+            f"We are refunding the full amount to your original payment method. "
+            f"Your payment reference is {reference}.\n\n"
+            f"We are sorry for the trouble.\n~ The Hairven Naturals Team"
+        ),
+        recipient=order.user.email,
+    )
+
 
 def send_payment_receipt(order, reference):
     safe_send_mail(
@@ -192,20 +226,46 @@ def apply_paystack_payment(data, user=None):
                            order.id, data.get('amount'), paystack.to_pesewas(order.total_amount))
             raise PaymentVerificationError("Amount paid does not match the order total")
 
+
+            # A late payment for an order the cleanup already cancelled: try to take
+        # the stock again. If it has sold out, the payment is still recorded (the
+        # money was received) but the order stays cancelled and needs a refund.
+        if order.status == 'CANCELLED':
+            try:
+                with transaction.atomic():
+                    _reserve_stock_for(order)
+                order.status = 'PENDING'
+            except CheckoutError as exc:
+                logger.error(
+                    "REFUND NEEDED: order %s was cancelled and cannot be restored (%s), "
+                    "but payment %s succeeded. Refund it in the Paystack dashboard.",
+                    order.id, exc.message, reference)
+
         order.is_paid = True
         order.paid_at = timezone.now()
         order.paystack_reference = reference
         order.payment_method = (data.get('channel') or '')[:30]
-        order.save(update_fields=['is_paid', 'paid_at', 'paystack_reference', 'payment_method'])
+        order.save(update_fields=['status', 'is_paid', 'paid_at',
+                                  'paystack_reference', 'payment_method'])
 
-        Notification.objects.create(
-            user=order.user,
-            title="Payment Confirmed!",
-            message=(f"Thank you! Your payment of ₵{order.total_amount} for Order #{order.id} "
-                     f"was received. We are preparing your package for shipping."),
-        )
-        transaction.on_commit(lambda: send_payment_receipt(order, reference))
+        if order.status == 'CANCELLED':  # paid, but could not be restored
+            Notification.objects.create(
+                user=order.user,
+                title="Payment received, refund on its way",
+                message=(f"Your payment of ₵{order.total_amount} for Order #{order.id} arrived after "
+                         f"the order expired and the items sold out. We are refunding you in full."),
+            )
+            transaction.on_commit(lambda: send_refund_notice(order, reference))
+        else:
+            Notification.objects.create(
+                user=order.user,
+                title="Payment Confirmed!",
+                message=(f"Thank you! Your payment of ₵{order.total_amount} for Order #{order.id} "
+                         f"was received. We are preparing your package for shipping."),
+            )
+            transaction.on_commit(lambda: send_payment_receipt(order, reference))
 
+    
     return order, True
 
 
